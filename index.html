@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="vi"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Dẫn đường GPS</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;overflow:hidden}
+#map{height:100vh}.top{position:fixed;z-index:1000;top:10px;left:10px;right:10px}
+.search{background:#fff;border-radius:17px;padding:8px;display:flex;gap:7px;box-shadow:0 3px 16px #0003}
+input{flex:1;border:0;outline:0;font-size:16px;padding:9px}.btn{border:0;border-radius:12px;padding:10px 13px;font-weight:700;background:#1677ff;color:#fff}
+.guide{margin-top:8px;background:#1677ff;color:#fff;border-radius:18px;padding:12px 15px;box-shadow:0 3px 16px #0003}
+.turn{display:flex;align-items:center;gap:10px}.arrow{font-size:47px;line-height:1}.turntxt b{font-size:23px}.turntxt span{display:block;font-size:14px;margin-top:3px}
+.lane{margin-top:8px;background:#fff;color:#17202a;border-radius:14px;padding:9px 12px;font-size:13px;box-shadow:0 3px 12px #0002;display:none}
+.lanes{display:flex;gap:6px;margin-top:5px}.laneBox{border:2px solid #aaa;border-radius:6px;padding:3px 9px;font-size:22px}.active{border-color:#1677ff;background:#eaf2ff}
+.bottom{position:fixed;z-index:1000;bottom:10px;left:10px;right:10px}.card{background:#fff;border-radius:19px;padding:13px;box-shadow:0 3px 16px #0003}
+.stats{display:flex;justify-content:space-between;text-align:center}.stats b{font-size:22px}.stats small{display:block;color:#687680;margin-top:2px}
+.actions{display:flex;gap:7px;margin-top:10px}.actions button{flex:1;border:0;border-radius:13px;padding:12px;font-weight:700}.primary{background:#1677ff;color:#fff}.soft{background:#edf2f6}
+.warn{position:fixed;z-index:1100;right:12px;top:150px;background:#fff;padding:9px 12px;border-radius:12px;box-shadow:0 3px 14px #0003;font-weight:800;display:none}
+</style></head><body>
+<div id="map"></div>
+<div class="top">
+<div class="search"><input id="dest" placeholder="Bạn muốn đi đâu?"><button class="btn" onclick="searchDest()">Tìm</button></div>
+<div class="guide">
+<div class="turn"><div class="arrow" id="arrow">↑</div><div class="turntxt"><b id="maneuver">Đi thẳng</b><span id="next">Đang chờ tuyến đường</span></div></div>
+</div>
+<div class="lane" id="lane"><b>Làn đường</b><div class="lanes" id="lanes"></div></div>
+</div>
+<div class="warn" id="speedWarn">⚠️ Giảm tốc</div>
+<div class="bottom"><div class="card">
+<div class="stats"><div><b id="eta">—</b><small>thời gian</small></div><div><b id="dist">—</b><small>còn lại</small></div><div><b id="speed">0</b><small>km/h</small></div><div><b id="limit">—</b><small>giới hạn</small></div></div>
+<div class="actions"><button class="soft" onclick="recenter()">📍 Vị trí</button><button class="primary" onclick="startNav()">🚗 Bắt đầu</button><button class="soft" onclick="speakNow()">🔊</button></div>
+</div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let map=L.map('map').setView([20.8449,106.6881],14);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+let current,destination,me,dm,route,watchId=null,routeData,steps=[],stepIndex=0;
+const $=id=>document.getElementById(id);
+function locate(){
+ if(!navigator.geolocation)return;
+ navigator.geolocation.getCurrentPosition(updatePos,()=>{}, {enableHighAccuracy:true});
+ if(watchId===null)watchId=navigator.geolocation.watchPosition(updatePos,()=>{}, {enableHighAccuracy:true,maximumAge:1000,timeout:10000});
+}
+function updatePos(p){
+ current=[p.coords.latitude,p.coords.longitude];let kmh=Math.max(0,(p.coords.speed||0)*3.6);
+ $('speed').textContent=Math.round(kmh);
+ if(me)me.setLatLng(current);else me=L.circleMarker(current,{radius:8,weight:3}).addTo(map);
+ if(routeData){updateGuidance(kmh); if(navigator.geolocation) map.panTo(current,{animate:true,duration:.4});}
+}
+function recenter(){if(current)map.setView(current,17)}
+async function searchDest(){
+ let q=$('dest').value.trim();if(!q)return;
+ let r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q),{headers:{'Accept-Language':'vi'}});
+ let a=await r.json();if(!a.length)return;
+ destination=[+a[0].lat,+a[0].lon];if(dm)dm.setLatLng(destination);else dm=L.marker(destination).addTo(map);
+ if(current)map.fitBounds(L.latLngBounds([current,destination]).pad(.2));
+}
+async function startNav(){
+ if(!current){locate();return}if(!destination){return}
+ let u=`https://router.project-osrm.org/route/v1/driving/${current[1]},${current[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson&steps=true&annotations=true`;
+ let d=await (await fetch(u)).json();if(!d.routes?.length)return;
+ routeData=d.routes[0];steps=routeData.legs[0].steps||[];stepIndex=0;
+ if(route)map.removeLayer(route);route=L.geoJSON(routeData.geometry,{style:{weight:7}}).addTo(map);
+ $('dist').textContent=(routeData.distance/1000).toFixed(1)+' km';$('eta').textContent=Math.max(1,Math.round(routeData.duration/60))+'′';
+ updateGuidance(0);speakNow();
+}
+function updateGuidance(kmh){
+ if(!steps.length)return;
+ let s=steps[Math.min(stepIndex,steps.length-1)], m=s.maneuver||{};
+ let type=m.type||'continue', mod=m.modifier||'straight';
+ let names={left:'Rẽ trái',right:'Rẽ phải',slight_left:'Chếch trái',slight_right:'Chếch phải',uturn:'Quay đầu',straight:'Đi thẳng'};
+ $('maneuver').textContent=names[mod]|| (type==='roundabout'?'Vào vòng xuyến':'Đi theo đường');
+ let arrows={left:'←',right:'→',slight_left:'↖',slight_right:'↗',uturn:'↶',straight:'↑'};
+ $('arrow').textContent=arrows[mod]||'↑';
+ $('next').textContent=(Math.max(0,Math.round(s.distance/100))*100)+' m'+(s.name?' • '+s.name:'');
+ let lanes=s.intersections?.[0]?.lanes||[];
+ if(lanes.length){$('lane').style.display='block';$('lanes').innerHTML=lanes.map((l,i)=>'<span class="laneBox '+(l.valid?'active':'')+'">'+(l.indications?.[0]==='left'?'←':l.indications?.[0]==='right'?'→':'↑')+'</span>').join('')}
+ if(s.maxspeed){$('limit').textContent=s.maxspeed+' km/h'; if(kmh>Number(s.maxspeed)+5)$('speedWarn').style.display='block';else $('speedWarn').style.display='none'}
+ let remain=Math.max(0,routeData.distance-(routeData.distance-s.distance)); $('dist').textContent=(routeData.distance/1000).toFixed(1)+' km';
+}
+function speakNow(){let t=$('maneuver').textContent+', '+$('next').textContent;if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(t))}}
+locate();
+</script></body></html>
